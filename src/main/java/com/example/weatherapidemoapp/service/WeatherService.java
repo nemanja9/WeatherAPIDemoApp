@@ -5,7 +5,9 @@ import com.example.weatherapidemoapp.dto.FootwearEnum;
 import com.example.weatherapidemoapp.dto.GearEnum;
 import com.example.weatherapidemoapp.dto.MeteoblueResponseDto;
 import com.example.weatherapidemoapp.dto.RecommendationDto;
+import com.example.weatherapidemoapp.entity.WeatherEntryEntity;
 import com.example.weatherapidemoapp.exception.ApiExceptionFactory;
+import com.example.weatherapidemoapp.repository.WeatherEntryRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -15,6 +17,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedList;
 import java.util.Map;
 
 @Service
@@ -22,6 +25,7 @@ import java.util.Map;
 public class WeatherService {
 
     private final RestClient restClient;
+    private final WeatherEntryRepository weatherEntryRepository;
 
     @Value("${meteoblue.api.key}")
     String apiKey;
@@ -35,19 +39,20 @@ public class WeatherService {
         sb.append(baseUrl).append("packages/basic-1h_basic-day");
         var requestParams = Map.of("lat", latitude.toString(), "lon", longitude.toString(), "apikey", apiKey);
 
-        return restClient.get(MeteoblueResponseDto.class, sb.toString(), null, requestParams);
+        var forecast = restClient.get(MeteoblueResponseDto.class, sb.toString(), null, requestParams);
+        saveToDb(forecast);
+        return forecast;
     }
 
-    public RecommendationDto getShoeRecommendationForPeriodAndLocation(Double longitude, Double latitude, LocalDateTime dateTime) {
+    public RecommendationDto getRecommendationForPeriodAndLocation(Double longitude, Double latitude, LocalDateTime dateTime) {
         if (dateTime.isBefore(LocalDateTime.now()) || dateTime.isAfter(LocalDateTime.now().plusDays(7))) {
             throw ApiExceptionFactory.badRequest("Unsupported date! Date has to be in the next 7 days");
         }
-        var weatherForecast = getBasicWeatherForLocation(longitude, latitude);
-        var desiredTimePosition = getDesiredTimeDateInterval(dateTime, weatherForecast);
+        var latestData = getWeatherDataForPeriodAndLocation(longitude, latitude, dateTime);
 
-        var perceptionAmount = weatherForecast.getData1h().getPrecipitation().get(desiredTimePosition);
-        var temperature = weatherForecast.getData1h().getTemperature().get(desiredTimePosition);
-        var snow = weatherForecast.getData1h().getSnowfraction().get(desiredTimePosition) == 1;
+        var perceptionAmount = latestData.getPrecipitation();
+        var temperature = latestData.getTemperature();
+        var snow = latestData.isSnowFraction();
         var recommendation = new RecommendationDto();
 
         if (temperature > 25) {
@@ -71,12 +76,11 @@ public class WeatherService {
         return recommendation;
     }
 
-    public BigDecimal getWindChillFactorForPeriodAndLocation(Double longitude, Double latitude, LocalDateTime dateTime){
-        var weatherForecast = getBasicWeatherForLocation(longitude, latitude);
-        var desiredTimePosition = getDesiredTimeDateInterval(dateTime, weatherForecast);
-        var temperature = weatherForecast.getData1h().getTemperature().get(desiredTimePosition);
+    public BigDecimal getWindChillFactorForPeriodAndLocation(Double longitude, Double latitude, LocalDateTime dateTime) {
+        var latestData = getWeatherDataForPeriodAndLocation(longitude, latitude, dateTime);
+        var temperature = latestData.getTemperature();
+        var windSpeed = latestData.getWindSpeed();
 
-        var windSpeed = weatherForecast.getData1h().getWindspeed().get(desiredTimePosition);
         if (windSpeed < 5D) {
             throw ApiExceptionFactory.genericError(HttpStatus.CONFLICT, "Formula not valid for wind speeds under 5km/h");
         }
@@ -85,20 +89,53 @@ public class WeatherService {
         return result.setScale(2, RoundingMode.HALF_UP);
     }
 
-    private int getDesiredTimeDateInterval(LocalDateTime dateTime, MeteoblueResponseDto weatherForecast) {
-        StringBuilder desiredTime = new StringBuilder(dateTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd ")));
-
-        if (dateTime.getMinute() > 30) {
-            desiredTime.append(dateTime.getHour() + 1).append(":00");
-        } else {
-            desiredTime.append(dateTime.getHour()).append(":00");
+    private WeatherEntryEntity getWeatherDataForPeriodAndLocation(Double longitude, Double latitude, LocalDateTime dateTime) {
+        var forecastFromApi = getBasicWeatherForLocation(longitude, latitude);
+        var dateWithoutMinutes = dateTime.minusMinutes(dateTime.getMinute()).minusSeconds(dateTime.getSecond());
+        var forecastFromDb = weatherEntryRepository.findAllByDateTimeAndLongitudeAndLatitudeOrderByLastUpdatedDesc(dateWithoutMinutes, forecastFromApi.getMetadata().getLongitude(), forecastFromApi.getMetadata().getLatitude());
+        if (forecastFromDb == null || forecastFromDb.isEmpty()) {
+            throw ApiExceptionFactory.notFound("Forecast could not be found");
         }
-        var desiredDate = desiredTime.toString();
-
-        var desiredTimePosition = weatherForecast.getData1h().getTime().indexOf(desiredDate);
-        if (desiredTimePosition < 0) {
-            throw ApiExceptionFactory.notFound("Weather could not be found for the specified date- time");
-        }
-        return desiredTimePosition;
+        return forecastFromDb.get(0);
     }
+
+    private void saveToDb(MeteoblueResponseDto forecast) {
+        var toSave = new LinkedList<WeatherEntryEntity>();
+
+        for (int i = 0; i < forecast.getData1h().getTime().size(); i++) {
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+            toSave.add(WeatherEntryEntity.builder()
+                    .dateTime(LocalDateTime.parse(forecast.getData1h().getTime().get(i), formatter))
+                    .precipitation(forecast.getData1h().getPrecipitation().get(i))
+                    .snowFraction(forecast.getData1h().getSnowfraction().get(i).equals(1))
+                    .rainSpot(forecast.getData1h().getRainspot().get(i))
+                    .temperature(forecast.getData1h().getTemperature().get(i))
+                    .feltTemperature(forecast.getData1h().getFelttemperature().get(i))
+                    .pictocode(forecast.getData1h().getPictocode().get(i))
+                    .windSpeed(forecast.getData1h().getWindspeed().get(i))
+                    .windDirection(forecast.getData1h().getWinddirection().get(i))
+                    .relativeHumidity(forecast.getData1h().getRelativehumidity().get(i))
+                    .seaLevelPressure(forecast.getData1h().getSealevelpressure().get(i))
+                    .precipitationProbability(forecast.getData1h().getPrecipitationProbability().get(i))
+                    .convectivePrecipitation(forecast.getData1h().getConvectivePrecipitation().get(i))
+                    .isDaylight(forecast.getData1h().getIsdaylight().get(i) == 1)
+                    .uvIndex(forecast.getData1h().getUvindex().get(i))
+                    .lastUpdated(LocalDateTime.now())
+                    .latitude(forecast.getMetadata().getLatitude())
+                    .longitude(forecast.getMetadata().getLongitude())
+                    .precipitationProbabilityUnit(forecast.getUnits().getPrecipitationProbability())
+                    .pressureUnit(forecast.getUnits().getPressure())
+                    .relativeHumidityUnit(forecast.getUnits().getRelativehumidity())
+                    .coUnit(forecast.getUnits().getCo())
+                    .precipitationUnit(forecast.getUnits().getPrecipitation())
+                    .temperatureUnit(forecast.getUnits().getTemperature())
+                    .windSpeedUnit(forecast.getUnits().getWindspeed())
+                    .windDirectionUnit(forecast.getUnits().getWinddirection())
+                    .predictabilityUnit(forecast.getUnits().getPredictability())
+                    .timeUnit(forecast.getUnits().getTime())
+                    .build());
+        }
+        weatherEntryRepository.saveAll(toSave);
+    }
+
 }

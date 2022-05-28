@@ -1,16 +1,12 @@
 
 package com.example.weatherapidemoapp.dto;
 
+import com.fasterxml.jackson.annotation.*;
+
+import javax.annotation.Generated;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Generated;
-import com.fasterxml.jackson.annotation.JsonAnyGetter;
-import com.fasterxml.jackson.annotation.JsonAnySetter;
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonPropertyOrder({
@@ -38,7 +34,7 @@ public class Data1h {
     @JsonProperty("precipitation")
     private List<Double> precipitation = null;
     @JsonProperty("snowfraction")
-    private List<Double> snowfraction = null;
+    private List<Integer> snowfraction = null;
     @JsonProperty("rainspot")
     private List<String> rainspot = null;
     @JsonProperty("temperature")
@@ -87,12 +83,12 @@ public class Data1h {
     }
 
     @JsonProperty("snowfraction")
-    public List<Double> getSnowfraction() {
+    public List<Integer> getSnowfraction() {
         return snowfraction;
     }
 
     @JsonProperty("snowfraction")
-    public void setSnowfraction(List<Double> snowfraction) {
+    public void setSnowfraction(List<Integer> snowfraction) {
         this.snowfraction = snowfraction;
     }
 
